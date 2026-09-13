@@ -17,6 +17,11 @@ return [
     'ls_hinweis_klasse'     => 'Assigns this season to a recurring competition series (e.g. for the champions list and record games). Classes are managed under Administrator → League classes.',
 
     'lk_btn_new'                   => 'New class',
+    'lk_label_show_logos'          => 'Show logos',
+    'lk_label_team_name_mode'      => 'Team name (champions list/records)',
+    'lk_option_name_kurz'          => 'Short',
+    'lk_option_name_mittel'        => 'Medium',
+    'lk_option_name_lang'          => 'Long',
     'lk_summary_line'              => '{n} class(es)',
     'lk_suggestions_heading'       => 'Suggestions for grouping',
     'lk_suggestions_hint'          => 'These unassigned leagues look like the same competition series across multiple seasons. Review/adjust the name and accept, or ignore.',

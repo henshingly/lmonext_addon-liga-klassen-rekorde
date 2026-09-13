@@ -2,7 +2,7 @@
 /**
  * Project: LMOnext
  * Filename: addon/liga-klassen-rekorde/handler_ligaklassen.php
- * Fileversion: 1.3.0
+ * Fileversion: 1.4.0
  *
  * PHP version 8.2
  *
@@ -79,6 +79,42 @@ if (function_exists('addonManager')) {
             // harter Abbruch der Seite, aber auch kein "done"-Flag, damit
             // der nächste Seitenaufruf es erneut versucht.
             error_log('[liga-klassen] Schema-Migration fehlgeschlagen: ' . $e->getMessage());
+        }
+    }
+}
+
+// ── Einmalige Schema-Migration v2: Logo-/Namenslänge-Einstellung pro
+// Klasse (auf Wunsch) - eigener, separater Migrationsblock mit eigenem
+// Flag, um die bereits bewährte v1-Migration oben unangetastet zu lassen.
+// Additive Spalten mit sinnvollen Defaults, keine Auswirkung auf
+// bestehende Klassen (Logos initial aus, Namenslänge initial "kurz").
+if (function_exists('addonManager')) {
+    $am2 = addonManager();
+    $schemaOk2 = false;
+    if ($am2->getSetting('liga_klassen_schema_v2', '') === 'done') {
+        try {
+            $cols2 = getDB()->query('SHOW COLUMNS FROM ' . tbl('liga_klassen'))->fetchAll(\PDO::FETCH_COLUMN, 0);
+            $schemaOk2 = in_array('show_logos', $cols2, true) && in_array('team_name_mode', $cols2, true);
+        } catch (\Throwable) {
+            $schemaOk2 = false;
+        }
+    }
+    if (!$schemaOk2) {
+        try {
+            $db2 = getDB();
+            $cols2 = $db2->query('SHOW COLUMNS FROM ' . tbl('liga_klassen'))->fetchAll(\PDO::FETCH_COLUMN, 0);
+            if (!in_array('show_logos', $cols2, true)) {
+                $db2->exec('ALTER TABLE ' . tbl('liga_klassen') . ' ADD COLUMN show_logos TINYINT(1) NOT NULL DEFAULT 0');
+            }
+            if (!in_array('team_name_mode', $cols2, true)) {
+                $db2->exec(
+                    'ALTER TABLE ' . tbl('liga_klassen')
+                    . ' ADD COLUMN team_name_mode ENUM(\'kurz\',\'mittel\',\'lang\') NOT NULL DEFAULT \'kurz\''
+                );
+            }
+            $am2->setSetting('liga_klassen_schema_v2', 'done');
+        } catch (\Throwable $e) {
+            error_log('[liga-klassen] Schema-Migration v2 fehlgeschlagen: ' . $e->getMessage());
         }
     }
 }
@@ -176,6 +212,11 @@ if ($action === 'save_liga_klasse' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $name      = trim($_POST['klasse_name']   ?? '');
     $sportType = trim($_POST['klasse_sport']  ?? 'football');
     $beschr    = trim($_POST['klasse_beschr'] ?? '');
+    $showLogos = isset($_POST['klasse_show_logos']) ? 1 : 0;
+    $nameMode  = trim($_POST['klasse_team_name_mode'] ?? 'kurz');
+    if (!in_array($nameMode, ['kurz', 'mittel', 'lang'], true)) {
+        $nameMode = 'kurz';
+    }
     if (!in_array($sportType, ['football', 'volleyball', 'icehockey', 'basketball', 'handball', 'badminton'], true)) {
         $sportType = 'football';
     }
@@ -183,12 +224,12 @@ if ($action === 'save_liga_klasse' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $db = getDB();
         if ($id > 0) {
-            $db->prepare('UPDATE ' . tbl('liga_klassen') . ' SET name=?,sport_type=?,beschreibung=? WHERE id=?')
-               ->execute([$name, $sportType, $beschr, $id]);
+            $db->prepare('UPDATE ' . tbl('liga_klassen') . ' SET name=?,sport_type=?,beschreibung=?,show_logos=?,team_name_mode=? WHERE id=?')
+               ->execute([$name, $sportType, $beschr, $showLogos, $nameMode, $id]);
             flash(t('lk_flash_updated'));
         } else {
-            $db->prepare('INSERT INTO ' . tbl('liga_klassen') . ' (name,sport_type,beschreibung) VALUES (?,?,?)')
-               ->execute([$name, $sportType, $beschr]);
+            $db->prepare('INSERT INTO ' . tbl('liga_klassen') . ' (name,sport_type,beschreibung,show_logos,team_name_mode) VALUES (?,?,?,?,?)')
+               ->execute([$name, $sportType, $beschr, $showLogos, $nameMode]);
             flash(t('lk_flash_created'));
         }
     } catch (\PDOException $e) {

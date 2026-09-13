@@ -2,7 +2,7 @@
 /**
  * Project: LMOnext
  * Filename: addon/liga-klassen-rekorde/view_ligaklassen.php
- * Fileversion: 1.2.0
+ * Fileversion: 1.3.0
  *
  * PHP version 8.2
  *
@@ -92,7 +92,7 @@ foreach (\LMOnext\Sport\SportRegistry::all() as $sp) { $sportLabels[$sp->getKey(
       </div>
       <div style="display:flex;gap:6px" onclick="event.stopPropagation()">
         <button class="btn btn-muted btn-sm"
-                onclick="openKlasseEdit(<?= $kid ?>,<?= h(json_encode($k['name'])) ?>,<?= h(json_encode($k['sport_type'])) ?>,<?= h(json_encode($k['beschreibung'])) ?>)">✏️</button>
+                onclick="openKlasseEdit(<?= $kid ?>,<?= h(json_encode($k['name'])) ?>,<?= h(json_encode($k['sport_type'])) ?>,<?= h(json_encode($k['beschreibung'])) ?>,<?= h(json_encode((bool)($k['show_logos'] ?? false))) ?>,<?= h(json_encode($k['team_name_mode'] ?? 'kurz')) ?>)">✏️</button>
         <form method="post" action="?action=delete_liga_klasse" style="display:inline"
               onsubmit="return confirm('<?= h(t('lk_confirm_delete')) ?>')">
           <input type="hidden" name="klasse_id" value="<?= $kid ?>">
@@ -195,6 +195,22 @@ foreach (\LMOnext\Sport\SportRegistry::all() as $sp) { $sportLabels[$sp->getKey(
                style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);
                       border-radius:var(--radius);padding:7px 12px;font-size:.88rem">
       </div>
+      <div style="margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer">
+          <input type="checkbox" name="klasse_show_logos" id="km-show-logos" value="1">
+          <?= h(t('lk_label_show_logos')) ?>
+        </label>
+      </div>
+      <div style="margin-bottom:16px">
+        <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px"><?= h(t('lk_label_team_name_mode')) ?></label>
+        <select name="klasse_team_name_mode" id="km-name-mode"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);
+                       border-radius:var(--radius);padding:6px 10px;font-size:.85rem">
+          <option value="kurz"><?= h(t('lk_option_name_kurz')) ?></option>
+          <option value="mittel"><?= h(t('lk_option_name_mittel')) ?></option>
+          <option value="lang"><?= h(t('lk_option_name_lang')) ?></option>
+        </select>
+      </div>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button type="button" class="btn btn-muted btn-sm"
                 onclick="document.getElementById('klasse-modal').style.display='none'"><?= h(t('common_cancel')) ?></button>
@@ -209,13 +225,18 @@ const i18nLk = {
   titleNew:  <?= json_encode(t('lk_btn_new')) ?>,
   titleEdit: <?= json_encode(t('lk_modal_title_edit')) ?>,
 };
-function openKlasseEdit(id, name, sport, beschr) {
+function openKlasseEdit(id, name, sport, beschr, showLogos, nameMode) {
   document.getElementById('km-id').value     = id;
   document.getElementById('km-name').value   = name;
   document.getElementById('km-beschr').value = beschr;
+  document.getElementById('km-show-logos').checked = !!showLogos;
   const sel = document.getElementById('km-sport');
   for (let i = 0; i < sel.options.length; i++) {
     if (sel.options[i].value === sport) { sel.selectedIndex = i; break; }
+  }
+  const modeSel = document.getElementById('km-name-mode');
+  for (let i = 0; i < modeSel.options.length; i++) {
+    if (modeSel.options[i].value === nameMode) { modeSel.selectedIndex = i; break; }
   }
   document.getElementById('km-title').textContent = id > 0 ? i18nLk.titleEdit : i18nLk.titleNew;
   document.getElementById('klasse-modal').style.display = 'flex';

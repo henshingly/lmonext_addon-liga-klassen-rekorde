@@ -17,6 +17,11 @@ return [
     'ls_hinweis_klasse'     => 'Ordnet diese Saison einer wiederkehrenden Wettbewerbsserie zu (z.B. für Meisterliste und Rekordspiele). Klassen werden unter Administrator → Liga-Klassen verwaltet.',
 
     'lk_btn_new'                   => 'Neue Klasse',
+    'lk_label_show_logos'          => 'Logos anzeigen',
+    'lk_label_team_name_mode'      => 'Teamname (Meisterliste/Rekorde)',
+    'lk_option_name_kurz'          => 'Kurz',
+    'lk_option_name_mittel'        => 'Mittel',
+    'lk_option_name_lang'          => 'Lang',
     'lk_summary_line'              => '{n} Klasse(n)',
     'lk_suggestions_heading'       => 'Vorschläge zum Gruppieren',
     'lk_suggestions_hint'          => 'Diese unzugeordneten Ligen sehen nach derselben Wettbewerbsserie über mehrere Saisons aus. Name prüfen/anpassen und übernehmen, oder ignorieren.',

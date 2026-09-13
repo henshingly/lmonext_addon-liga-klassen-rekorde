@@ -25,6 +25,8 @@
 .rk-meister-table a:hover{text-decoration:underline}
 .rk-meister-footer{text-align:right;font-size:.75rem;color:#9098a8;padding:8px 10px 0}
 .rk-rendertime{text-align:center;font-size:.72rem;color:#b7bccb;margin-top:6px}
+.rk-team-cell{display:inline-flex;align-items:center;gap:6px}
+.rk-team-logo{height:18px;width:auto;vertical-align:middle;flex-shrink:0}
 </style>
 <div class="rk-wrap">
   <h2 class="rk-title">{KLASSE_NAME}</h2>

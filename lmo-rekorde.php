@@ -2,7 +2,7 @@
 /**
  * Project: LMOnext
  * Filename: addon/liga-klassen-rekorde/lmo-rekorde.php
- * Fileversion: 1.13.1
+ * Fileversion: 1.14.1
  *
  * PHP version 8.2
  *
@@ -71,6 +71,10 @@ use LMOnext\Liga\LigaService;
 $rkIsDirectCall = defined('LMO_ADDON_STANDALONE_CALL');
 
 require_once __DIR__ . '/../../frontend/bootstrap.php';
+// Für findTeamLogoPathFrontend() (neue Logo-Anzeige-Einstellung, siehe
+// rkTeamLogoImg() unten) - war bisher nicht geladen, da dieses Addon bis
+// jetzt keine Logos anzeigte. Gleiches Muster wie im ewige-tabelle-Addon.
+require_once __DIR__ . '/../../frontend/data_liga.php';
 
 // Standalone-Addon: eigene Sprachdateien explizit laden. Name muss dem
 // manifest['name'] aus addon.json entsprechen ("liga-klassen-rekorde").
@@ -228,12 +232,37 @@ function rkGetKlasse(int $klasseId) : ?array
 {
     try {
         $db = getDB();
-        $s = $db->prepare('SELECT id,name,sport_type FROM ' . tbl('liga_klassen') . ' WHERE id=?');
+        // show_logos/team_name_mode: siehe rkEnsureKlasseDisplaySchema()
+        // weiter unten - additive Spalten, daher defensiv mit COALESCE
+        // gegen eine (kurzzeitig) noch nicht migrierte Datenbank
+        // abgesichert, statt die ganze Anfrage fehlschlagen zu lassen.
+        $s = $db->prepare(
+            'SELECT id, name, sport_type,
+                    COALESCE(show_logos, 0) AS show_logos,
+                    COALESCE(NULLIF(team_name_mode, \'\'), \'kurz\') AS team_name_mode
+               FROM ' . tbl('liga_klassen') . ' WHERE id=?'
+        );
         $s->execute([$klasseId]);
         $row = $s->fetch();
         return $row !== false ? $row : null;
     } catch (\Throwable) {
-        return null;
+        // Fallback fuer den Fall, dass die Spalten noch nicht existieren
+        // (z.B. unmittelbar nach einem Addon-Update, bevor die Migration
+        // gelaufen ist) - liefert die Klasse trotzdem mit den
+        // Standardwerten zurueck, statt komplett zu scheitern.
+        try {
+            $s = getDB()->prepare('SELECT id,name,sport_type FROM ' . tbl('liga_klassen') . ' WHERE id=?');
+            $s->execute([$klasseId]);
+            $row = $s->fetch();
+            if ($row === false) {
+                return null;
+            }
+            $row['show_logos']     = 0;
+            $row['team_name_mode'] = 'kurz';
+            return $row;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }
 
@@ -451,6 +480,95 @@ function rkBulkLoadStandingsData(array $ligen) : array
     }
 
     return $out;
+}
+
+/**
+ * Baut ein zentrales Team-Namensverzeichnis für eine gesamte Klasse
+ * (teamId => ['name'=>..,'kurz'=>..,'mittel'=>..]) - Grundlage für die
+ * Logo-/Namenslänge-Einstellung (rk_klasse.show_logos/team_name_mode,
+ * siehe rkEnsureKlasseDisplaySchema()). Statt jede einzelne
+ * Datenquellen-Funktion (rkHoechsterSieg(), rkComputeStreak() usw.) um
+ * kurz/mittel zu erweitern, wird EINMAL pro Klasse ein vollständiges
+ * Verzeichnis geladen und überall dort nachgeschlagen, wo ein Teamname
+ * tatsächlich ausgegeben wird (siehe rkPickName()/rkTeamCell()) - deutlich
+ * weniger Änderungsfläche als eine Erweiterung an jeder einzelnen Stelle.
+ * Nutzt dieselben, bereits bulk-geladenen Rohdaten aus
+ * rkBulkLoadStandingsData() (keine zusätzliche Datenbankabfrage).
+ *
+ * @return array<int,array{name:string,kurz:string,mittel:string}>
+ */
+function rkBuildTeamNameDirectory(int $klasseId) : array
+{
+    static $cache = [];
+    if (isset($cache[$klasseId])) {
+        return $cache[$klasseId];
+    }
+    $ligen = rkGetKlasseLigen($klasseId);
+    $bulk  = rkBulkLoadStandingsData($ligen);
+
+    $dir = [];
+    foreach ($bulk['teamsByLiga'] as $teams) {
+        foreach ($teams as $t) {
+            $tid = (int)$t['id'];
+            if (!isset($dir[$tid])) {
+                $dir[$tid] = [
+                    'name'   => (string)($t['name'] ?? ''),
+                    'kurz'   => (string)($t['kurz'] ?? ''),
+                    'mittel' => (string)($t['mittel'] ?? ''),
+                ];
+            }
+        }
+    }
+    return $cache[$klasseId] = $dir;
+}
+
+/**
+ * Wählt aus dem Team-Namensverzeichnis (rkBuildTeamNameDirectory()) den
+ * gewünschten Namen aus, je nach Klassen-Einstellung "Teamname:
+ * kurz/mittel/lang". Fällt auf die Langform zurück, wenn kurz/mittel leer
+ * sind (viele Teams haben kein gepflegtes Kürzel) oder wenn die Team-ID
+ * gar nicht im Verzeichnis steht (z.B. bei einem Dummy-/Platzhalter-Team) -
+ * dann wird $fallback verwendet (i.d.R. der bereits vorhandene Langname
+ * aus der jeweiligen Datenquelle, z.B. p.heim_name aus einem JOIN).
+ */
+function rkPickName(array $dir, int $teamId, string $mode, string $fallback = '') : string
+{
+    $entry = $dir[$teamId] ?? null;
+    if ($entry === null) {
+        return $fallback;
+    }
+    $val = match ($mode) {
+        'mittel' => $entry['mittel'],
+        'lang'   => $entry['name'],
+        default  => $entry['kurz'], // 'kurz' und jeder unbekannte Wert
+    };
+    return $val !== '' ? $val : ($entry['name'] !== '' ? $entry['name'] : $fallback);
+}
+
+/**
+ * Team-Logo als <img>-Tag, gleiches Muster wie ewigeLogoImg() im
+ * ewige-tabelle-Addon. Nur aufgerufen, wenn die Klassen-Einstellung
+ * "Logos anzeigen" aktiv ist (siehe rkTeamCell()).
+ */
+function rkTeamLogoImg(int $teamId) : string
+{
+    $path = findTeamLogoPathFrontend($teamId) ?? 'assets/img/nopic-team.svg';
+    return '<img src="' . h(rkProjectRootUrlPrefix() . $path) . '" alt="" class="rk-team-logo">';
+}
+
+/**
+ * Baut die komplette Team-Darstellung (optionales Logo + Name gemäß
+ * gewählter Namenslänge) für EINE Tabellenzelle - zentrale Stelle, die
+ * von allen Render-Funktionen genutzt wird, damit "Logos anzeigen" und
+ * "Teamname kurz/mittel/lang" überall konsistent angewendet werden.
+ */
+function rkTeamCell(array $dir, int $teamId, string $mode, bool $showLogos, string $fallback = '') : string
+{
+    $name = h(rkPickName($dir, $teamId, $mode, $fallback));
+    if (!$showLogos || $teamId <= 0) {
+        return $name;
+    }
+    return '<span class="rk-team-cell">' . rkTeamLogoImg($teamId) . '<span>' . $name . '</span></span>';
 }
 
 /**
@@ -1058,6 +1176,13 @@ function rkRenderMeisterlisteHtml(int $klasseId) : string
     $sportProfile = \LMOnext\Sport\SportRegistry::get($klasse['sport_type'] ?? 'football');
     $statCols = $sportProfile->getStandingsColumns(); // sp/s/[u]/n/tore/diff/pkt, sportartabhaengig
 
+    // Logo-/Namenslänge-Einstellung dieser Klasse (siehe
+    // rkEnsureKlasseDisplaySchema()) - rkTeamCell() wendet beides
+    // konsistent auf jede hier ausgegebene Teamzelle an.
+    $rkMode = (string)($klasse['team_name_mode'] ?? 'kurz');
+    $rkShowLogos = (bool)($klasse['show_logos'] ?? false);
+    $rkDir = rkBuildTeamNameDirectory($klasseId);
+
     $html = '<div class="rk-meister-bar">' . h(tf('liga_rekorde_meister_historie')) . '</div>'
         . '<table class="rk-table rk-meister-table"><thead><tr>'
         . '<th>#</th><th>' . h(tf('liga_rekorde_col_meister')) . '</th>'
@@ -1080,9 +1205,9 @@ function rkRenderMeisterlisteHtml(int $klasseId) : string
                 $titleCounts[$tid] = ['name' => $m['name'], 'count' => 0];
             }
             $titleCounts[$tid]['count']++;
-            // Langform des Teamnamens (m['name']) statt Kurzform (m['kurz']) -
-            // auf Nutzerwunsch, siehe Changelog.
-            $html .= '<td class="rk-meister">' . h($m['name']) . '</td>'
+            // Teamname gemäß Klassen-Einstellung (kurz/mittel/lang), optional
+            // mit Logo - siehe rkTeamCell().
+            $html .= '<td class="rk-meister">' . rkTeamCell($rkDir, $tid, $rkMode, $rkShowLogos, $m['name']) . '</td>'
                 . '<td><a href="' . h(rkProjectRootUrlPrefix() . 'liga.php?id=' . (int)$row['liga_id']) . '">'
                 . h($row['saison'] !== '' ? $row['saison'] : $row['liga_name']) . '</a></td>';
             foreach ($statCols as $col) {
@@ -1115,10 +1240,10 @@ function rkRenderMeisterlisteHtml(int $klasseId) : string
         . '<th>' . h(tf('liga_rekorde_col_anzahl_titel')) . '</th>'
         . '</tr></thead><tbody>';
     $rank = 1;
-    foreach ($titleCounts as $t) {
+    foreach ($titleCounts as $tid => $t) {
         $html .= '<tr>'
             . '<td>' . $rank . '</td>'
-            . '<td>' . h($t['name']) . '</td>'
+            . '<td>' . rkTeamCell($rkDir, (int)$tid, $rkMode, $rkShowLogos, $t['name']) . '</td>'
             . '<td class="rk-value">' . (int)$t['count'] . '</td>'
             . '</tr>';
         $rank++;
@@ -1134,7 +1259,7 @@ function rkRenderMeisterlisteHtml(int $klasseId) : string
  * mit denselben Spalten, nur unterschiedlich sortiert/mit unterschiedlichem
  * Zusatzwert).
  */
-function rkRenderPartienListeHtml(array $partien, string $valueLabel, string $valueKey) : string
+function rkRenderPartienListeHtml(array $partien, string $valueLabel, string $valueKey, array $dir, string $mode, bool $showLogos) : string
 {
     if (empty($partien)) {
         return '<p class="rk-empty">' . h(tf('liga_rekorde_keine_spiele')) . '</p>';
@@ -1147,10 +1272,12 @@ function rkRenderPartienListeHtml(array $partien, string $valueLabel, string $va
         . '</tr></thead><tbody>';
     $rank = 1;
     foreach ($partien as $p) {
+        $heimCell = rkTeamCell($dir, (int)($p['heim_id'] ?? 0), $mode, $showLogos, $p['heim_name'] ?? '?');
+        $gastCell = rkTeamCell($dir, (int)($p['gast_id'] ?? 0), $mode, $showLogos, $p['gast_name'] ?? '?');
         $html .= '<tr>'
             . '<td>' . $rank . '</td>'
             . '<td>' . h($p['saison'] !== '' ? $p['saison'] : '–') . '</td>'
-            . '<td>' . h($p['heim_name'] ?? '?') . ' – ' . h($p['gast_name'] ?? '?') . '</td>'
+            . '<td>' . $heimCell . ' – ' . $gastCell . '</td>'
             . '<td>' . (int)$p['h_tore'] . ':' . (int)$p['g_tore'] . '</td>'
             . '<td class="rk-value">' . (int)$p[$valueKey] . '</td>'
             . '</tr>';
@@ -1164,7 +1291,7 @@ function rkRenderPartienListeHtml(array $partien, string $valueLabel, string $va
  * Baut eine Team-Zaehl-Tabelle (# | Team | Anzahl) - fuer rkOhneGegentore()/
  * rkOhneEigeneTore() (Ergebnisse aus rkSortedTeamCounts()).
  */
-function rkRenderTeamCountHtml(array $rows, string $valueLabel) : string
+function rkRenderTeamCountHtml(array $rows, string $valueLabel, array $dir, string $mode, bool $showLogos) : string
 {
     if (empty($rows)) {
         return '<p class="rk-empty">' . h(tf('liga_rekorde_keine_spiele')) . '</p>';
@@ -1177,7 +1304,7 @@ function rkRenderTeamCountHtml(array $rows, string $valueLabel) : string
     foreach ($rows as $r) {
         $html .= '<tr>'
             . '<td>' . $rank . '</td>'
-            . '<td>' . h($r['team_name']) . '</td>'
+            . '<td>' . rkTeamCell($dir, (int)($r['team_id'] ?? 0), $mode, $showLogos, $r['team_name']) . '</td>'
             . '<td class="rk-value">' . (int)$r['anzahl'] . '</td>'
             . '</tr>';
         $rank++;
@@ -1190,7 +1317,7 @@ function rkRenderTeamCountHtml(array $rows, string $valueLabel) : string
  * Baut eine Serien-Liste (Sieg/Niederlage/Unentschieden/ohne Niederlage/ohne
  * Sieg - alle fünf teilen sich dasselbe Markup) als HTML-Tabelle.
  */
-function rkRenderSerieHtml(array $serien) : string
+function rkRenderSerieHtml(array $serien, array $dir, string $mode, bool $showLogos) : string
 {
     if (empty($serien)) {
         return '<p class="rk-empty">' . h(tf('liga_rekorde_keine_spiele')) . '</p>';
@@ -1208,7 +1335,7 @@ function rkRenderSerieHtml(array $serien) : string
         }
         $html .= '<tr>'
             . '<td>' . $rank . '</td>'
-            . '<td>' . h($s['team_name']) . '</td>'
+            . '<td>' . rkTeamCell($dir, (int)($s['team_id'] ?? 0), $mode, $showLogos, $s['team_name']) . '</td>'
             . '<td class="rk-value">' . (int)$s['laenge'] . '</td>'
             . '<td>' . $zeitraum . '</td>'
             . '</tr>';
@@ -1230,6 +1357,13 @@ function rkRenderBody(int $klasseId, string $view, int $limit) : string
     if ($view === 'meister') {
         return rkRenderMeisterlisteHtml($klasseId);
     }
+
+    // Logo-/Namenslänge-Einstellung dieser Klasse - siehe rkTeamCell().
+    $klasse = rkGetKlasse($klasseId);
+    $rkMode = (string)($klasse['team_name_mode'] ?? 'kurz');
+    $rkShowLogos = (bool)($klasse['show_logos'] ?? false);
+    $rkDir = rkBuildTeamNameDirectory($klasseId);
+
     $hoechsterSieg   = rkHoechsterSieg($klasseId, $limit);
     $ergebnisreich   = rkErgebnisreichstePartie($klasseId, $limit);
     $hoechstesUnent  = rkHoechstesUnentschieden($klasseId, $limit);
@@ -1245,31 +1379,31 @@ function rkRenderBody(int $klasseId, string $view, int $limit) : string
     $tabellenfuehrung    = rkLaengsteTabellenfuehrungSerie($klasseId, $limit);
     return
         '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_hoechster_sieg')) . '</h3>'
-        . rkRenderPartienListeHtml($hoechsterSieg, tf('liga_rekorde_col_diff'), 'diff')
+        . rkRenderPartienListeHtml($hoechsterSieg, tf('liga_rekorde_col_diff'), 'diff', $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_ergebnisreich')) . '</h3>'
-        . rkRenderPartienListeHtml($ergebnisreich, tf('liga_rekorde_col_summe'), 'summe')
+        . rkRenderPartienListeHtml($ergebnisreich, tf('liga_rekorde_col_summe'), 'summe', $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_hoechstes_unentschieden')) . '</h3>'
-        . rkRenderPartienListeHtml($hoechstesUnent, tf('liga_rekorde_col_summe'), 'summe')
+        . rkRenderPartienListeHtml($hoechstesUnent, tf('liga_rekorde_col_summe'), 'summe', $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_ohne_gegentore')) . '</h3>'
-        . rkRenderTeamCountHtml($ohneGegentore, tf('liga_rekorde_col_anzahl_spiele'))
+        . rkRenderTeamCountHtml($ohneGegentore, tf('liga_rekorde_col_anzahl_spiele'), $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_ohne_eigene_tore')) . '</h3>'
-        . rkRenderTeamCountHtml($ohneEigeneTore, tf('liga_rekorde_col_anzahl_spiele'))
+        . rkRenderTeamCountHtml($ohneEigeneTore, tf('liga_rekorde_col_anzahl_spiele'), $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_tabellenfuehrung')) . '</h3>'
-        . rkRenderSerieHtml($tabellenfuehrung)
+        . rkRenderSerieHtml($tabellenfuehrung, $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_siegesserie')) . '</h3>'
-        . rkRenderSerieHtml($siegSerie)
+        . rkRenderSerieHtml($siegSerie, $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_ohne_niederlage')) . '</h3>'
-        . rkRenderSerieHtml($ohneNiederlage)
+        . rkRenderSerieHtml($ohneNiederlage, $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_ohne_sieg')) . '</h3>'
-        . rkRenderSerieHtml($ohneSieg)
+        . rkRenderSerieHtml($ohneSieg, $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_niederlageserie')) . '</h3>'
-        . rkRenderSerieHtml($niederlageSerie)
+        . rkRenderSerieHtml($niederlageSerie, $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_unentschieden')) . '</h3>'
-        . rkRenderSerieHtml($unentschSerie)
+        . rkRenderSerieHtml($unentschSerie, $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_serie_ohne_gegentore')) . '</h3>'
-        . rkRenderSerieHtml($serieOhneGegentore)
+        . rkRenderSerieHtml($serieOhneGegentore, $rkDir, $rkMode, $rkShowLogos)
         . '<h3 class="rk-subheading">' . h(tf('liga_rekorde_heading_serie_ohne_eigene_tore')) . '</h3>'
-        . rkRenderSerieHtml($serieOhneEigeneTore);
+        . rkRenderSerieHtml($serieOhneEigeneTore, $rkDir, $rkMode, $rkShowLogos);
 }
 
 /**
